@@ -36,6 +36,17 @@ function escapeHtml(str) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
+function toBase64Utf8(str) {
+  return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16))));
+}
+function fromBase64Utf8(b64) {
+  return decodeURIComponent(atob(b64).split("").map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join(""));
+}
+function formatDateTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return d.toLocaleString("ar", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
 
 function emptyDb() {
   return {
@@ -47,6 +58,7 @@ function emptyDb() {
     tierLap: { macro: 0, meso: 0, micro: 0 },
     cycle: 1,
     lastOpenDate: null,
+    updatedAt: Date.now(),
   };
 }
 
@@ -216,6 +228,7 @@ function saveDb() {
 }
 function mutate(fn) {
   fn(db);
+  db.updatedAt = Date.now();
   saveDb();
   render();
 }
@@ -278,6 +291,21 @@ function setNoteVal(traitId, note) {
   const entry = db.logs[todayStr()][traitId] || { done: false, rating: null, note: "" };
   entry.note = note;
   db.logs[todayStr()][traitId] = entry;
+  db.updatedAt = Date.now();
+  saveDb();
+}
+
+/* -------- نقل البيانات بين الأجهزة (تصدير/استيراد يدوي) -------- */
+
+function exportCode() {
+  return toBase64Utf8(JSON.stringify(db));
+}
+function importCode(code) {
+  const json = fromBase64Utf8(code.trim());
+  const parsed = JSON.parse(json);
+  if (!parsed || !Array.isArray(parsed.traits)) throw new Error("invalid");
+  db = ensureDailySlots(parsed);
+  db.updatedAt = Date.now();
   saveDb();
 }
 
@@ -299,7 +327,10 @@ function renderHeader() {
   return `
     <div class="ghars-header-top">
       <div class="ghars-brand">${sproutSvg(20)}<span>غَرْس</span></div>
-      <div class="ghars-cycle-badge">الدورة ${lap}</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="ghars-icon-btn" data-action="open-sync" aria-label="نقل البيانات بين الأجهزة">${iconSync(15)}</button>
+        <div class="ghars-cycle-badge">الدورة ${lap}</div>
+      </div>
     </div>
     <div class="ghars-header-sub">${mode} · ${db.traits.length}/100 صفة مغروسة</div>
   `;
@@ -517,6 +548,7 @@ function renderModal() {
   if (!ui.modal) return "";
   if (ui.modal.type === "detail") return renderDetailModal(ui.modal);
   if (ui.modal.type === "form") return renderFormModal(ui.modal);
+  if (ui.modal.type === "sync") return renderSyncModal();
   return "";
 }
 
@@ -580,6 +612,31 @@ function renderFormModal(modal) {
     </div>`;
 }
 
+function renderSyncModal() {
+  const code = exportCode();
+  return `
+    <div class="ghars-modal-overlay" data-action="close-modal">
+      <div class="ghars-modal" data-stop="1">
+        <button class="ghars-modal-close" data-action="close-modal">${iconX(18)}</button>
+        <h2 class="ghars-modal-title" style="margin-bottom:4px">نقل البيانات بين الأجهزة</h2>
+        <div class="ghars-modal-branch" style="margin-bottom:16px">آخر تحديث على هذا الجهاز: ${formatDateTime(db.updatedAt)}</div>
+
+        <div class="ghars-field-label" style="margin-top:0">١) انسخ الكود من هذا الجهاز</div>
+        <textarea class="ghars-input ghars-code-box" id="sync-export" rows="4" readonly>${code}</textarea>
+        <button class="ghars-btn-primary" id="sync-copy-btn" style="width:100%;margin-top:8px">${iconCopy(15)} نسخ الكود</button>
+        <div class="ghars-empty-desc" style="text-align:right;max-width:none;margin-top:6px">
+          الصقه في رسالة لنفسك (واتساب مثلاً) ثم افتحها من الجهاز الآخر.
+        </div>
+
+        <div style="height:1px;background:rgba(237,230,211,0.1);margin:20px 0"></div>
+
+        <div class="ghars-field-label" style="margin-top:0">٢) الصق الكود هنا لاستيراده على هذا الجهاز</div>
+        <textarea class="ghars-input ghars-code-box" id="sync-import" rows="4" placeholder="الصق الكود المنسوخ من الجهاز الآخر هنا…"></textarea>
+        <button class="ghars-btn-warn" id="sync-import-btn" style="width:100%;margin-top:8px">استيراد الآن (سيستبدل بيانات هذا الجهاز بالكامل)</button>
+      </div>
+    </div>`;
+}
+
 /* ============================================================
    الأيقونات (SVG مضمّنة، بلا اعتماد خارجي)
    ============================================================ */
@@ -599,6 +656,8 @@ function iconFlame(size){ return icon(`<path d="M12 2c1 4-3 5-3 9a3 3 0 0 0 6 0c
 function iconLeaf(size){ return icon(`<path d="M11 20A7 7 0 0 1 4 13c0-4 3-9 10-9 0 7-3 10-9 10z"/><path d="M4 20l7-7"/>`, size); }
 function iconPencil(size){ return icon(`<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>`, size); }
 function iconTrash(size){ return icon(`<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>`, size); }
+function iconSync(size){ return icon(`<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>`, size); }
+function iconCopy(size){ return icon(`<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>`, size); }
 
 /* ============================================================
    ربط الأحداث
@@ -665,6 +724,39 @@ function attachListeners() {
       const active = tierPicker.querySelector(".active");
       tierPicker.dataset.selected = active ? active.getAttribute("data-tier") : "micro";
     }
+  }
+
+  const syncCopyBtn = document.getElementById("sync-copy-btn");
+  if (syncCopyBtn) {
+    syncCopyBtn.addEventListener("click", async () => {
+      const ta = document.getElementById("sync-export");
+      try {
+        await navigator.clipboard.writeText(ta.value);
+      } catch (e) {
+        ta.removeAttribute("readonly");
+        ta.select();
+        try { document.execCommand("copy"); } catch (e2) {}
+        ta.setAttribute("readonly", "readonly");
+      }
+      showToast("تم نسخ الكود");
+    });
+  }
+  const syncImportBtn = document.getElementById("sync-import-btn");
+  if (syncImportBtn) {
+    syncImportBtn.addEventListener("click", () => {
+      const val = document.getElementById("sync-import").value.trim();
+      if (!val) { showToast("الصق الكود أولاً"); return; }
+      const ok = window.confirm("سيتم استبدال كل بيانات هذا الجهاز بالكود الملصق. هل أنت متأكد؟");
+      if (!ok) return;
+      try {
+        importCode(val);
+        ui.modal = null;
+        render();
+        showToast("تم استيراد البيانات بنجاح");
+      } catch (e) {
+        showToast("الكود غير صالح، تأكد من نسخه كاملاً");
+      }
+    });
   }
 
   const saveBtn = document.getElementById("f-save");
