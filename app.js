@@ -214,6 +214,21 @@ function seededRand(seed) { let x = Math.sin(seed) * 10000; return x - Math.floo
 
 let db = null;
 let ui = { tab: "today", modal: null };
+let syncConfig = { apiKey: "", binId: "", enabled: false };
+let syncPushTimer = null;
+let syncStatus = { busy: false, lastMsg: "" };
+
+const SYNC_CONFIG_KEY = "ghars-sync-config-v1";
+function loadSyncConfig() {
+  try {
+    const raw = localStorage.getItem(SYNC_CONFIG_KEY);
+    if (raw) return Object.assign({ apiKey: "", binId: "", enabled: false }, JSON.parse(raw));
+  } catch (e) {}
+  return { apiKey: "", binId: "", enabled: false };
+}
+function saveSyncConfig() {
+  try { localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(syncConfig)); } catch (e) {}
+}
 
 function loadDb() {
   let loaded = null;
@@ -231,6 +246,72 @@ function mutate(fn) {
   db.updatedAt = Date.now();
   saveDb();
   render();
+  scheduleSyncPush();
+}
+
+/* -------- مزامنة تلقائية عبر jsonbin.io -------- */
+
+const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
+
+async function jsonbinCreate(apiKey, data) {
+  const res = await fetch(JSONBIN_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Master-Key": apiKey, "X-Bin-Private": "true" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("create-failed");
+  const json = await res.json();
+  return json.metadata.id;
+}
+async function jsonbinRead(apiKey, binId) {
+  const res = await fetch(`${JSONBIN_BASE}/${binId}/latest`, { headers: { "X-Master-Key": apiKey } });
+  if (!res.ok) throw new Error("read-failed");
+  const json = await res.json();
+  return json.record;
+}
+async function jsonbinUpdate(apiKey, binId, data) {
+  const res = await fetch(`${JSONBIN_BASE}/${binId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Master-Key": apiKey },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("update-failed");
+}
+
+function scheduleSyncPush() {
+  if (!syncConfig.enabled || !syncConfig.apiKey || !syncConfig.binId) return;
+  clearTimeout(syncPushTimer);
+  syncPushTimer = setTimeout(async () => {
+    try { await jsonbinUpdate(syncConfig.apiKey, syncConfig.binId, db); }
+    catch (e) { /* صامت: غالباً بلا إنترنت، سيُحاول لاحقاً عند أي تعديل جديد */ }
+  }, 900);
+}
+
+async function pullAndMerge(showFeedback) {
+  if (!syncConfig.enabled || !syncConfig.apiKey || !syncConfig.binId) {
+    if (showFeedback) showToast("فعّل المزامنة أولاً");
+    return;
+  }
+  try {
+    const remote = await jsonbinRead(syncConfig.apiKey, syncConfig.binId);
+    if (remote && Array.isArray(remote.traits)) {
+      const remoteTs = remote.updatedAt || 0;
+      const localTs = db.updatedAt || 0;
+      if (remoteTs > localTs) {
+        db = ensureDailySlots(remote);
+        saveDb();
+        render();
+        if (showFeedback) showToast("تم سحب أحدث نسخة");
+      } else if (localTs > remoteTs) {
+        await jsonbinUpdate(syncConfig.apiKey, syncConfig.binId, db);
+        if (showFeedback) showToast("تم رفع بياناتك لتصبح الأحدث");
+      } else if (showFeedback) {
+        showToast("بياناتك محدّثة بالفعل");
+      }
+    }
+  } catch (e) {
+    if (showFeedback) showToast("تعذّرت المزامنة، تحقق من الإنترنت والمفتاح");
+  }
 }
 
 function showToast(msg) {
@@ -614,25 +695,38 @@ function renderFormModal(modal) {
 
 function renderSyncModal() {
   const code = exportCode();
+  const cfg = syncConfig;
   return `
     <div class="ghars-modal-overlay" data-action="close-modal">
       <div class="ghars-modal" data-stop="1">
         <button class="ghars-modal-close" data-action="close-modal">${iconX(18)}</button>
-        <h2 class="ghars-modal-title" style="margin-bottom:4px">نقل البيانات بين الأجهزة</h2>
+        <h2 class="ghars-modal-title" style="margin-bottom:4px">المزامنة بين الأجهزة</h2>
         <div class="ghars-modal-branch" style="margin-bottom:16px">آخر تحديث على هذا الجهاز: ${formatDateTime(db.updatedAt)}</div>
 
-        <div class="ghars-field-label" style="margin-top:0">١) انسخ الكود من هذا الجهاز</div>
-        <textarea class="ghars-input ghars-code-box" id="sync-export" rows="4" readonly>${code}</textarea>
-        <button class="ghars-btn-primary" id="sync-copy-btn" style="width:100%;margin-top:8px">${iconCopy(15)} نسخ الكود</button>
-        <div class="ghars-empty-desc" style="text-align:right;max-width:none;margin-top:6px">
-          الصقه في رسالة لنفسك (واتساب مثلاً) ثم افتحها من الجهاز الآخر.
+        <div class="ghars-sync-status ${cfg.enabled ? "on" : ""}">${cfg.enabled ? "المزامنة التلقائية مُفعّلة ✅" : "المزامنة التلقائية غير مفعّلة"}</div>
+
+        <div class="ghars-field-label" style="margin-top:14px">مفتاح API (X-Master-Key) من jsonbin.io</div>
+        <input class="ghars-input" id="sync-apikey" value="${escapeHtml(cfg.apiKey)}" placeholder="الصق المفتاح هنا">
+
+        <div class="ghars-field-label">معرّف الصندوق (Bin ID)</div>
+        <input class="ghars-input" id="sync-binid" value="${escapeHtml(cfg.binId)}" placeholder="سيُملأ تلقائياً عند الإنشاء، أو الصقه إن أنشأته على جهاز آخر">
+
+        <div style="display:flex; gap:8px; margin-top:10px">
+          <button class="ghars-btn-primary" id="sync-create-btn" style="flex:1">إنشاء صندوق جديد</button>
+          <button class="ghars-btn-primary" id="sync-activate-btn" style="flex:1; background:linear-gradient(135deg,#C9A24B,#a9863d)">تفعيل ومزامنة الآن</button>
+        </div>
+        <button class="ghars-btn-outline" id="sync-now-btn" style="width:100%;margin-top:8px">مزامنة الآن يدوياً</button>
+        <div class="ghars-empty-desc" style="text-align:right;max-width:none;margin-top:8px">
+          أنشئ حساباً مجانياً على jsonbin.io وانسخ مفتاح API من صفحة API Keys، الصقه هنا واضغط "إنشاء صندوق جديد" مرة واحدة على أول جهاز. ثم انسخ نفس المفتاح ومعرّف الصندوق إلى بقية أجهزتك واضغط "تفعيل ومزامنة الآن".
         </div>
 
         <div style="height:1px;background:rgba(237,230,211,0.1);margin:20px 0"></div>
 
-        <div class="ghars-field-label" style="margin-top:0">٢) الصق الكود هنا لاستيراده على هذا الجهاز</div>
-        <textarea class="ghars-input ghars-code-box" id="sync-import" rows="4" placeholder="الصق الكود المنسوخ من الجهاز الآخر هنا…"></textarea>
-        <button class="ghars-btn-warn" id="sync-import-btn" style="width:100%;margin-top:8px">استيراد الآن (سيستبدل بيانات هذا الجهاز بالكامل)</button>
+        <div class="ghars-field-label" style="margin-top:0">بديل بلا إنترنت: نسخ يدوي</div>
+        <textarea class="ghars-input ghars-code-box" id="sync-export" rows="3" readonly>${code}</textarea>
+        <button class="ghars-btn-outline" id="sync-copy-btn" style="width:100%;margin-top:8px">${iconCopy(15)} نسخ الكود</button>
+        <textarea class="ghars-input ghars-code-box" id="sync-import" rows="3" placeholder="أو الصق كوداً هنا لاستيراده…" style="margin-top:10px"></textarea>
+        <button class="ghars-btn-warn" id="sync-import-btn" style="width:100%;margin-top:8px">استيراد الآن (سيستبدل بيانات هذا الجهاز)</button>
       </div>
     </div>`;
 }
@@ -726,6 +820,47 @@ function attachListeners() {
     }
   }
 
+  const syncCreateBtn = document.getElementById("sync-create-btn");
+  if (syncCreateBtn) {
+    syncCreateBtn.addEventListener("click", async () => {
+      const apiKey = document.getElementById("sync-apikey").value.trim();
+      if (!apiKey) { showToast("الصق مفتاح API أولاً"); return; }
+      syncCreateBtn.textContent = "جارٍ الإنشاء…";
+      try {
+        const binId = await jsonbinCreate(apiKey, db);
+        syncConfig = { apiKey, binId, enabled: true };
+        saveSyncConfig();
+        ui.modal = { type: "sync" };
+        render();
+        showToast("تم إنشاء الصندوق وتفعيل المزامنة");
+      } catch (e) {
+        showToast("تعذّر الإنشاء، تحقق من المفتاح والإنترنت");
+        syncCreateBtn.textContent = "إنشاء صندوق جديد";
+      }
+    });
+  }
+  const syncActivateBtn = document.getElementById("sync-activate-btn");
+  if (syncActivateBtn) {
+    syncActivateBtn.addEventListener("click", async () => {
+      const apiKey = document.getElementById("sync-apikey").value.trim();
+      const binId = document.getElementById("sync-binid").value.trim();
+      if (!apiKey || !binId) { showToast("أدخل المفتاح ومعرّف الصندوق معاً"); return; }
+      syncConfig = { apiKey, binId, enabled: true };
+      saveSyncConfig();
+      await pullAndMerge(true);
+      ui.modal = { type: "sync" };
+      render();
+    });
+  }
+  const syncNowBtn = document.getElementById("sync-now-btn");
+  if (syncNowBtn) {
+    syncNowBtn.addEventListener("click", async () => {
+      await pullAndMerge(true);
+      ui.modal = { type: "sync" };
+      render();
+    });
+  }
+
   const syncCopyBtn = document.getElementById("sync-copy-btn");
   if (syncCopyBtn) {
     syncCopyBtn.addEventListener("click", async () => {
@@ -784,9 +919,17 @@ function attachListeners() {
 function boot() {
   db = loadDb();
   saveDb();
+  syncConfig = loadSyncConfig();
   render();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./service-worker.js").catch(() => {});
   }
+  if (syncConfig.enabled) {
+    pullAndMerge(false);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && syncConfig.enabled) pullAndMerge(false);
+  });
+  window.addEventListener("focus", () => { if (syncConfig.enabled) pullAndMerge(false); });
 }
 document.addEventListener("DOMContentLoaded", boot);
