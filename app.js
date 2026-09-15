@@ -265,7 +265,11 @@ async function jsonbinCreate(apiKey, data) {
 }
 async function jsonbinRead(apiKey, binId) {
   const res = await fetch(`${JSONBIN_BASE}/${binId}/latest`, { headers: { "X-Master-Key": apiKey } });
-  if (!res.ok) throw new Error("read-failed");
+  if (!res.ok) {
+    const err = new Error("read-failed");
+    err.status = res.status;
+    throw err;
+  }
   const json = await res.json();
   return json.record;
 }
@@ -275,7 +279,11 @@ async function jsonbinUpdate(apiKey, binId, data) {
     headers: { "Content-Type": "application/json", "X-Master-Key": apiKey },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("update-failed");
+  if (!res.ok) {
+    const err = new Error("update-failed");
+    err.status = res.status;
+    throw err;
+  }
 }
 
 function scheduleSyncPush() {
@@ -310,7 +318,12 @@ async function pullAndMerge(showFeedback) {
       }
     }
   } catch (e) {
-    if (showFeedback) showToast("تعذّرت المزامنة، تحقق من الإنترنت والمفتاح");
+    if (showFeedback) {
+      let msg = "تعذّرت المزامنة، تحقق من الإنترنت";
+      if (e && e.status === 401) msg = "المفتاح غير صحيح (401) — انسخه من جديد من jsonbin.io";
+      else if (e && e.status === 404) msg = "معرّف الصندوق غير موجود (404) — تأكد من نسخه بالكامل";
+      showToast(msg);
+    }
   }
 }
 
