@@ -764,6 +764,9 @@ function attachListeners() {
   document.querySelectorAll('[data-action="go-traits"]').forEach((el) => {
     el.addEventListener("click", () => { ui.tab = "traits"; render(); });
   });
+  document.querySelectorAll('[data-action="open-sync"]').forEach((el) => {
+    el.addEventListener("click", () => { ui.modal = { type: "sync" }; render(); });
+  });
   document.querySelectorAll('[data-action="toggle"]').forEach((el) => {
     el.addEventListener("click", (e) => { e.stopPropagation(); toggleDone(el.getAttribute("data-id")); });
   });
